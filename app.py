@@ -4,12 +4,8 @@ import numpy as np
 
 from bb84 import run_bb84, bits_to_str, otp_encrypt, otp_decrypt
 from rsa_utils import (
-    generate_keys,
-    encode_msg_to_int,
-    decode_int_to_msg,
-    rsa_encrypt,
-    rsa_decrypt,
-    factor_n_trial,
+    generate_keys, rsa_decrypt, factor_n_trial,
+    max_plain_bytes, encrypt_bytes, decrypt_bytes
 )
 
 st.set_page_config(page_title="Crypto Demo: RSA/ECC vs QKD", page_icon="🔐", layout="wide")
@@ -25,7 +21,7 @@ if "otp_dec" not in st.session_state:
 if "rsa_keys" not in st.session_state:
     st.session_state.rsa_keys = None
 if "rsa_cipher" not in st.session_state:
-    st.session_state.rsa_cipher = None
+    st.session_state.rsa_cipher = None   # list[int] blocks
 if "rsa_plain_out" not in st.session_state:
     st.session_state.rsa_plain_out = ""
 
@@ -40,49 +36,41 @@ mode = st.radio("Choose a view:", ["Side-by-side (RSA + QKD)", "Only QKD (BB84)"
 attacker = st.toggle(
     "Eve (attacker) ON?",
     value=False,
-    help="In RSA toy demo, Eve factors tiny n. In QKD, Eve performs intercept–resend, raising QBER."
+    help="In RSA toy demo, Eve factors tiny n. In QKD, Eve intercept–resends, raising QBER."
 )
 
-# ---------------- RSA Panel ----------------
+# ---------------- RSA Panel (chunked) ----------------
 def rsa_panel():
     with st.container():
-        st.subheader("🔓 Classical (RSA) — Toy Demo")
+        st.subheader("🔓 Classical (RSA) — Toy Demo (chunks)")
         st.write(
-            "This uses *tiny* RSA keys for a **teaching demo**. Real RSA uses 2048+ bits. "
-            "Here, if Eve is ON, she factors `n` quickly and recovers the plaintext."
+            "Uses *tiny* RSA keys for a **teaching demo**. Real RSA uses 2048+ bits. "
+            "Here, we encrypt the whole message by splitting it into blocks that fit under n."
         )
 
         cols = st.columns(2)
 
-        # Left controls / encryption
         with cols[0]:
             bits = st.slider("Bits per prime (toy)", 12, 20, 16, help="Smaller → easier to factor (for the demo).")
             msg = st.text_input("Message", "hello quantum world")
 
             if st.button("Generate RSA keys & Encrypt", key="rsa_gen"):
-                # Generate small RSA keys
                 keys = generate_keys(bits_per_prime=bits)
                 st.session_state.rsa_keys = keys
 
-                # Encode message; ensure it fits under n
-                m = encode_msg_to_int(msg)
-                max_len = (keys.n.bit_length() - 1) // 8  # rough bytes limit for m < n
-                msg_bytes = msg.encode("utf-8")
-                if len(msg_bytes) >= max_len:
-                    msg_bytes = msg_bytes[: max_len - 1] if max_len > 1 else b"A"
-                    m = int.from_bytes(msg_bytes, "big")
+                kbytes = max_plain_bytes(keys.n)
+                st.caption(f"Max plaintext bytes per block with this key: {kbytes}")
 
-                # Encrypt
-                c = rsa_encrypt(m, keys.n, keys.e)
-                st.session_state.rsa_cipher = c
+                data = msg.encode("utf-8")
+                cts = encrypt_bytes(data, keys.n, keys.e)   # list[int]
+                st.session_state.rsa_cipher = cts
                 st.session_state.rsa_plain_out = ""
 
             if st.session_state.rsa_keys and st.session_state.rsa_cipher is not None:
                 k = st.session_state.rsa_keys
-                st.code(f"Public key (n, e):\n n = {k.n}\n e = {k.e}")
-                st.code(f"Ciphertext (int): {st.session_state.rsa_cipher}")
+                st.code(f"Public key (n, e):\n n = {k.n}\n e = 65537")
+                st.code("Ciphertext blocks (ints):\n" + ", ".join(map(str, st.session_state.rsa_cipher)))
 
-        # Right: receiver / attacker
         with cols[1]:
             if st.session_state.rsa_keys and st.session_state.rsa_cipher is not None:
                 k = st.session_state.rsa_keys
@@ -92,39 +80,36 @@ def rsa_panel():
                     p, q = factor_n_trial(k.n)
                     if p and q:
                         st.code(f"Eve factored n: p = {p}, q = {q}")
+                        # derive phi and d (inline)
                         phi = (p - 1) * (q - 1)
-
-                        # Recompute d = e^{-1} mod phi quickly (inline)
                         def egcd(a, b):
-                            if b == 0:
-                                return a, 1, 0
+                            if b == 0: return a, 1, 0
                             g, y, x = egcd(b, a % b)
                             return g, x, y - (a // b) * x
-
                         def modinv(a, m):
                             g, x, _ = egcd(a, m)
                             return x % m if g == 1 else None
+                        d_eve = modinv(65537, phi)
 
-                        d_eve = modinv(k.e, phi)
                         if d_eve is not None:
-                            m_eve = rsa_decrypt(st.session_state.rsa_cipher, k.n, d_eve)
-                            st.session_state.rsa_plain_out = decode_int_to_msg(m_eve)
+                            data_eve = decrypt_bytes(st.session_state.rsa_cipher, k.n, d_eve)
+                            st.session_state.rsa_plain_out = data_eve.decode("utf-8", errors="replace")
                             st.success("Eve recovered the plaintext")
                             st.code(st.session_state.rsa_plain_out)
                         else:
-                            st.error("Could not invert e modulo phi (unexpected in demo).")
+                            st.error("Could not compute d from factored n (unexpected).")
                     else:
                         st.error("Factoring failed (choose fewer bits).")
                 else:
-                    st.info("Eve OFF → only the intended receiver (with private key) can decrypt (in this toy).")
-                    m_recv = rsa_decrypt(st.session_state.rsa_cipher, k.n, k.d)
-                    st.session_state.rsa_plain_out = decode_int_to_msg(m_recv)
+                    st.info("Eve OFF → only receiver (with private key) can decrypt (in this toy).")
+                    data_recv = decrypt_bytes(st.session_state.rsa_cipher, k.n, k.d)
+                    st.session_state.rsa_plain_out = data_recv.decode("utf-8", errors="replace")
                     st.code("Receiver decrypted message:")
                     st.code(st.session_state.rsa_plain_out)
 
         st.caption(
-            "⚠️ Educational demo only: tiny keys, no padding. Real RSA (2048+ bits) is safe *today* against classical attackers, "
-            "but **Shor's algorithm on a sufficiently large quantum computer would break it.**"
+            "⚠️ Educational demo: tiny keys, no padding. Real systems use **hybrid crypto** "
+            "(RSA/ECDH for the key, AES for the data). Shor's algorithm would break RSA/ECC on a large quantum computer."
         )
 
 # ---------------- QKD Panel ----------------
@@ -144,12 +129,11 @@ def qkd_panel():
                 st.session_state.bb84_res = run_bb84(
                     n_qubits=n_qubits,
                     noise=noise,
-                    eve_present=attacker,   # Eve toggle controls intercept–resend
+                    eve_present=attacker,   # Eve controls intercept–resend
                     sample_rate=sample_rate,
                     threshold=threshold,
                     seed=int(seed),
                 )
-                # Clear previous OTP outputs
                 st.session_state.otp_ct_hex = ""
                 st.session_state.otp_dec = ""
 
@@ -214,7 +198,4 @@ else:
     with colB:
         qkd_panel()
 
-st.caption(
-    "Demo for education: RSA panel uses tiny keys to illustrate factoring. "
-    "QKD panel simulates BB84; no real quantum hardware."
-)
+st.caption("Demo for education: RSA panel uses tiny keys (block-chunked). QKD panel simulates BB84; no real quantum hardware.")
