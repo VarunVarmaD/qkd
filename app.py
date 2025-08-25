@@ -1,9 +1,16 @@
-\
 import streamlit as st
 import numpy as np
 from bb84 import run_bb84, bits_to_str, otp_encrypt, otp_decrypt
 
 st.set_page_config(page_title="BB84 QKD Simulator", page_icon="🔒", layout="wide")
+
+# ---- Session state init ----
+if "bb84_res" not in st.session_state:
+    st.session_state.bb84_res = None
+if "otp_ct_hex" not in st.session_state:
+    st.session_state.otp_ct_hex = ""
+if "otp_dec" not in st.session_state:
+    st.session_state.otp_dec = ""
 
 st.title("🔒 BB84 QKD Demonstration Simulator")
 st.write("Configure the parameters, run the protocol, and see whether a secure key can be established.")
@@ -16,18 +23,27 @@ with st.sidebar:
     sample_rate = st.slider("Public sample fraction", 0.0, 0.5, 0.2, step=0.05)
     threshold = st.slider("Abort threshold (QBER)", 0.01, 0.3, 0.11, step=0.01)
     seed = st.number_input("Seed (reproducible)", min_value=0, value=42)
-    run = st.button("Run BB84")
 
-if run:
-    res = run_bb84(
-        n_qubits=n_qubits,
-        noise=noise,
-        eve_present=eve_present,
-        sample_rate=sample_rate,
-        threshold=threshold,
-        seed=int(seed),
-    )
+    # Primary action
+    if st.button("Run BB84", use_container_width=True):
+        st.session_state.bb84_res = run_bb84(
+            n_qubits=n_qubits,
+            noise=noise,
+            eve_present=eve_present,
+            sample_rate=sample_rate,
+            threshold=threshold,
+            seed=int(seed),
+        )
+        # clear previous OTP outputs
+        st.session_state.otp_ct_hex = ""
+        st.session_state.otp_dec = ""
 
+# Always read result from session_state (persists across reruns)
+res = st.session_state.bb84_res
+
+if res is None:
+    st.info("Configure parameters in the sidebar and click **Run BB84**.")
+else:
     col1, col2, col3 = st.columns(3)
     with col1:
         st.metric("Raw bits (sent)", res.n_qubits)
@@ -57,14 +73,19 @@ if run:
 
     st.divider()
     st.header("One-Time Pad Demo")
-    pt = st.text_input("Message to encrypt", "hello quantum world")
-    if st.button("Encrypt & Decrypt with Current Key", disabled=res.aborted or res.final_key.size == 0):
-        _, ct = otp_encrypt(pt, res.final_key)
-        dec = otp_decrypt(ct, res.final_key)
-        st.write("Ciphertext (hex):")
-        st.code(ct.hex())
-        st.write("Decrypted plaintext:")
-        st.code(dec)
 
-else:
-    st.info("Configure parameters in the sidebar and click **Run BB84**.")
+    # OTP section uses session_state to persist outputs too
+    pt = st.text_input("Message to encrypt", "hello quantum world")
+    btn_disabled = (res.aborted or res.final_key.size == 0)
+
+    if st.button("Encrypt & Decrypt with Current Key", disabled=btn_disabled):
+        # Perform OTP using the saved result
+        _, ct = otp_encrypt(pt, res.final_key)
+        st.session_state.otp_ct_hex = ct.hex()
+        st.session_state.otp_dec = otp_decrypt(ct, res.final_key)
+
+    if st.session_state.otp_ct_hex:
+        st.write("Ciphertext (hex):")
+        st.code(st.session_state.otp_ct_hex)
+        st.write("Decrypted plaintext:")
+        st.code(st.session_state.otp_dec)
