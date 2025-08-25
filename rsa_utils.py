@@ -111,27 +111,3 @@ def factor_n_trial(n: int) -> Tuple[Optional[int], Optional[int]]:
             return f, n // f
         f += 2
     return None, None
-
-# --- Block helpers for toy RSA (so longer messages work) ---
-def max_plain_bytes(n: int) -> int:
-    # ensure integer m < n; keep one-bit margin
-    return max(1, (n.bit_length() - 1) // 8)
-
-def encrypt_bytes(data: bytes, n: int, e: int) -> list[int]:
-    k = max_plain_bytes(n)
-    blocks = [data[i:i+k] for i in range(0, len(data), k)]
-    cts = []
-    for b in blocks:
-        m = int.from_bytes(b, "big")
-        if m <= 1:   # avoid edge cases in this toy demo
-            m = 2
-        cts.append(pow(m, e, n))
-    return cts
-
-def decrypt_bytes(cts: list[int], n: int, d: int) -> bytes:
-    out = bytearray()
-    for c in cts:
-        m = pow(c, d, n)
-        blen = max(1, (m.bit_length() + 7) // 8)
-        out.extend(m.to_bytes(blen, "big"))
-    return bytes(out)
